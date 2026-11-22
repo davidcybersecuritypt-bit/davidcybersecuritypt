@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Writeups — AlienSec</title>
+<link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+
+<nav class="topbar">
+  <div class="wrap">
+    <div class="brand">Alien<span>Sec</span></div>
+    <ul>
+      <li><a href="../index.html">Home</a></li>
+      <li><a href="../projetos/index.html">Projetos</a></li>
+      <li><a href="index.html">Writeups</a></li>
+      <li><a href="../index.html#contacto">Contacto</a></li>
+    </ul>
+  </div>
+</nav>
+
+<div class="wrap">
+
+  <header class="hero">
+    <div class="kicker">TryHackMe</div>
+    <h1>Writeups</h1>
+    <p class="lead">Passo a passo das máquinas que resolvi no TryHackMe, incluindo
+      o que correu mal pelo caminho. Flags sempre mascaradas, conforme as regras
+      da plataforma.</p>
+  </header>
+
+  <!-- TODO: adicione um .card novo para cada writeup novo (use writeups/_template.html como base) -->
+  <div class="grid">
+
+    <div class="card">
+      <h3><a href="razorblack.html">RazorBlack</a></h3>
+      <p>Do nmap ao Domain Admin: NFS mal configurado, AS-REP Roasting,
+        Kerberoasting, SeBackupPrivilege + diskshadow e Pass-the-Hash.</p>
+      <div class="tags">
+        <span class="tag">Active Directory</span>
+        <span class="tag">Kerberoasting</span>
+        <span class="tag">Impacket</span>
+      </div>
+      <div class="card-links"><a href="razorblack.html">Ler writeup &rarr;</a></div>
+    </div>
+
+  </div>
+
+  <footer class="sitefoot">
+    &copy; <span id="year"></span> AlienSec — David.
+  </footer>
+
+</div>
+
+<script>document.getElementById('year').textContent = new Date().getFullYear();</script>
+</body>
+</html>
